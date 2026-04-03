@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: ebd-pro-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ebdpro
+      POSTGRES_PASSWORD: ebdpro123
+      POSTGRES_DB: ebdpro
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ebdpro"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache (opcional, para sessões)
+  redis:
+    image: redis:7-alpine
+    container_name: ebd-pro-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API (Fastify)
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: ebd-pro-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3333
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://ebdpro:ebdpro123@postgres:5432/ebdpro
+      JWT_SECRET: supersecret-change-in-production-please
+      FRONTEND_URL: http://localhost:3000
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3333:3333"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/apps/api/node_modules
+
+  # Frontend Web (Next.js)
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: ebd-pro-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:3333
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/apps/web/node_modules
+      - /app/apps/web/.next
+
+volumes:
+  postgres_data:
+  redis_data:

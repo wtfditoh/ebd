@@ -1,0 +1,330 @@
+// Schema EBD Pro - Multi-tenant com RBAC completo
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// 🏛️ MULTI-TENANCY (Igrejas)
+// ==========================================
+
+model Igreja {
+  id        String   @id @default(cuid())
+  nome      String
+  slug      String   @unique // "assembleia-central"
+  cnpj      String?
+  endereco  String?
+  telefone  String?
+  email     String?
+  
+  ativo     Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Configurações da igreja
+  config    IgrejaConfig?
+  
+  // Relações
+  usuarios  Usuario[]
+  classes   Classe[]
+  alunos    Aluno[]
+  chamadas  Chamada[]
+  visitantes Visitante[]
+  materiais MaterialEstoque[]
+
+  @@map("igrejas")
+}
+
+model IgrejaConfig {
+  id              String  @id @default(cuid())
+  igrejaId        String  @unique
+  igreja          Igreja  @relation(fields: [igrejaId], references: [id], onDelete: Cascade)
+
+  // Metas
+  metaPresenca    Int     @default(80) // %
+  metaBiblia      Int     @default(70) // %
+  metaRevista     Int     @default(60) // %
+
+  // Notificações
+  notificarFaltas Boolean @default(true)
+  faltasParaAlerta Int    @default(3) // Alerta após X faltas seguidas
+  
+  // Horários padrão
+  horarioInicio   String? // "09:00"
+  horariFim       String? // "10:30"
+
+  @@map("igrejas_config")
+}
+
+// ==========================================
+// 👤 AUTENTICAÇÃO & PERMISSÕES
+// ==========================================
+
+enum Role {
+  SUPER_ADMIN   // Vê todas as igrejas
+  ADMIN_IGREJA  // Admin de uma igreja
+  SECRETARIO    // Secretário da EBD
+  PROFESSOR     // Professor de classe
+  ALUNO         // Aluno (acesso limitado)
+}
+
+model Usuario {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  senha     String   // bcrypt hash
+  nome      String
+  telefone  String?
+  foto      String?
+  
+  role      Role     @default(PROFESSOR)
+  ativo     Boolean  @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Multi-tenant
+  igrejaId  String?
+  igreja    Igreja?  @relation(fields: [igrejaId], references: [id])
+
+  // Relações
+  classesLecionadas Classe[] @relation("ProfessorClasses")
+  chamadas          Chamada[]
+
+  @@index([email])
+  @@index([igrejaId, role])
+  @@map("usuarios")
+}
+
+// ==========================================
+// 🏫 CLASSES & ALUNOS
+// ==========================================
+
+enum FaixaEtaria {
+  INFANTIL        // 0-12 anos
+  JUVENIS         // 13-17 anos
+  JOVENS          // 18-30 anos
+  ADULTOS         // 31-60 anos
+  MELHOR_IDADE    // 60+ anos
+}
+
+model Classe {
+  id          String      @id @default(cuid())
+  nome        String
+  descricao   String?
+  faixaEtaria FaixaEtaria
+  
+  capacidade  Int         @default(40)
+  ativa       Boolean     @default(true)
+  
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  // Multi-tenant
+  igrejaId    String
+  igreja      Igreja      @relation(fields: [igrejaId], references: [id], onDelete: Cascade)
+
+  // Professor responsável
+  professorId String?
+  professor   Usuario?    @relation("ProfessorClasses", fields: [professorId], references: [id])
+
+  // Relações
+  alunos      Aluno[]
+  chamadas    Chamada[]
+
+  @@index([igrejaId, ativa])
+  @@map("classes")
+}
+
+enum StatusAluno {
+  ATIVO
+  INATIVO
+  TRANSFERIDO
+}
+
+model Aluno {
+  id          String       @id @default(cuid())
+  nome        String
+  dataNascimento DateTime?
+  telefone    String?
+  endereco    String?
+  responsavel String?      // Para menores de idade
+  foto        String?
+  
+  status      StatusAluno  @default(ATIVO)
+  
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  // Multi-tenant
+  igrejaId    String
+  igreja      Igreja       @relation(fields: [igrejaId], references: [id], onDelete: Cascade)
+
+  // Classe atual
+  classeId    String
+  classe      Classe       @relation(fields: [classeId], references: [id])
+
+  // Relações
+  presencas   Presenca[]
+  observacoes ObservacaoAluno[]
+
+  @@index([igrejaId, status])
+  @@index([classeId])
+  @@map("alunos")
+}
+
+// ==========================================
+// ✅ CHAMADA & FREQUÊNCIA
+// ==========================================
+
+model Chamada {
+  id          String   @id @default(cuid())
+  data        DateTime @default(now())
+  observacoes String?  @db.Text
+  
+  finalizada  Boolean  @default(false)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Multi-tenant
+  igrejaId    String
+  igreja      Igreja   @relation(fields: [igrejaId], references: [id], onDelete: Cascade)
+
+  // Classe
+  classeId    String
+  classe      Classe   @relation(fields: [classeId], references: [id])
+
+  // Quem fez a chamada
+  professorId String
+  professor   Usuario  @relation(fields: [professorId], references: [id])
+
+  // Relações
+  presencas   Presenca[]
+  visitantes  Visitante[]
+  materiais   MaterialChamada[]
+
+  @@unique([classeId, data]) // Uma chamada por classe por dia
+  @@index([igrejaId, data])
+  @@map("chamadas")
+}
+
+model Presenca {
+  id          String   @id @default(cuid())
+  presente    Boolean
+  trouxeBiblia Boolean @default(false)
+  trouxeRevista Boolean @default(false)
+  observacao  String?
+
+  createdAt   DateTime @default(now())
+
+  // Relações
+  alunoId     String
+  aluno       Aluno    @relation(fields: [alunoId], references: [id], onDelete: Cascade)
+
+  chamadaId   String
+  chamada     Chamada  @relation(fields: [chamadaId], references: [id], onDelete: Cascade)
+
+  @@unique([alunoId, chamadaId])
+  @@index([chamadaId])
+  @@index([alunoId, createdAt])
+  @@map("presencas")
+}
+
+// ==========================================
+// 🆕 VISITANTES
+// ==========================================
+
+model Visitante {
+  id          String   @id @default(cuid())
+  nome        String
+  telefone    String?
+  endereco    String?
+  idade       Int?
+  
+  primeiraVisita Boolean @default(true)
+  vezes       Int      @default(1)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Multi-tenant
+  igrejaId    String
+  igreja      Igreja   @relation(fields: [igrejaId], references: [id], onDelete: Cascade)
+
+  // Associado a qual chamada
+  chamadaId   String
+  chamada     Chamada  @relation(fields: [chamadaId], references: [id], onDelete: Cascade)
+
+  @@index([igrejaId, createdAt])
+  @@map("visitantes")
+}
+
+// ==========================================
+// 📚 MATERIAL (Bíblias/Revistas)
+// ==========================================
+
+enum TipoMaterial {
+  BIBLIA
+  REVISTA
+  APOSTILA
+  OUTRO
+}
+
+model MaterialEstoque {
+  id          String        @id @default(cuid())
+  tipo        TipoMaterial
+  descricao   String
+  quantidade  Int           @default(0)
+  
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Multi-tenant
+  igrejaId    String
+  igreja      Igreja        @relation(fields: [igrejaId], references: [id], onDelete: Cascade)
+
+  // Relações
+  movimentacoes MaterialChamada[]
+
+  @@index([igrejaId, tipo])
+  @@map("material_estoque")
+}
+
+model MaterialChamada {
+  id          String   @id @default(cuid())
+  quantidade  Int      // Quantos foram distribuídos nessa chamada
+  
+  // Relações
+  chamadaId   String
+  chamada     Chamada  @relation(fields: [chamadaId], references: [id], onDelete: Cascade)
+
+  materialId  String
+  material    MaterialEstoque @relation(fields: [materialId], references: [id])
+
+  @@index([chamadaId])
+  @@map("material_chamada")
+}
+
+// ==========================================
+// 📝 OBSERVAÇÕES & ALERTAS
+// ==========================================
+
+model ObservacaoAluno {
+  id          String   @id @default(cuid())
+  texto       String   @db.Text
+  tipo        String?  // "falta", "comportamento", "melhoria"
+  
+  createdAt   DateTime @default(now())
+
+  // Relações
+  alunoId     String
+  aluno       Aluno    @relation(fields: [alunoId], references: [id], onDelete: Cascade)
+
+  @@index([alunoId, createdAt])
+  @@map("observacoes_aluno")
+}
